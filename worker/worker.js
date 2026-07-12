@@ -30,6 +30,9 @@ export const LIMITS = {
   MAX_CTX_KEY: 40,     // длина ключа
   MAX_CTX_VAL: 600,    // длина значения (длинные коды состояния — как фраза-сейв unevie)
   MAX_SDK: 40,         // строка версии SDK
+  /* бюджет СОБРАННОГО сообщения: Slack режет text на ~40k, оставляем запас;
+     текст отзыва после esc() ≤ ~20k, остаток бюджета получает контекст (#6) */
+  MAX_MSG: 38000,
 };
 
 /* in-isolate фолбэк rate limit'а (пер-изолятный — только смягчение; основной
@@ -41,8 +44,17 @@ const rlLog = new Map(); // `${project}:${ip}` → [ts,…] за последн�
 export const esc = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/* управляющие символы и переводы строк → пробел: Slack-разметку не подделать */
-export const flat = (s) => String(s).replace(/[\u0000-\u001F\u007F]+/g, ' ').trim();
+/* управляющие символы и переводы строк → пробел: Slack-разметку не подделать.
+   Включая юникодные разделители U+2028/U+2029 и NEL U+0085 — часть клиентов
+   Slack рендерит их как перевод строки (#5). */
+export const flat = (s) =>
+  String(s).replace(/[\u0000-\u001F\u007F\u0085\u2028\u2029]+/g, ' ').trim();
+
+/* mrkdwn-спецсимволы — только для имени: оно единственное вставляется внутрь
+   чужой разметки (*…* в заголовке), `>` уже нейтрализует esc() (#5) */
+export const stripMrkdwn = (s) => String(s).replace(/[*_~`]/g, '');
+
+const byteLen = (s) => new TextEncoder().encode(s).byteLength;
 
 export function resolveProject(projectId, projects = PROJECTS) {
   if (!projectId || typeof projectId !== 'string') return null;
@@ -91,7 +103,10 @@ export function rateLimitedFallback(key, now, perMin = RL_PER_MIN_DEFAULT, log =
 
 /* Валидация и нормализация тела запроса → {ok, error?, data?} (чистая функция). */
 export function parsePayload(raw, limits = LIMITS) {
-  if (raw.length > limits.MAX_BODY) return { ok: false, error: 'too_long', status: 413 };
+  /* MAX_BODY — байты, не code units: кириллица/эмодзи в UTF-8 до 4 байт на
+     символ; проверка длины первой — дёшево отсекает и гигантский ASCII (#6) */
+  if (raw.length > limits.MAX_BODY || byteLen(raw) > limits.MAX_BODY)
+    return { ok: false, error: 'too_long', status: 413 };
   let body;
   try {
     body = JSON.parse(raw);
@@ -101,26 +116,47 @@ export function parsePayload(raw, limits = LIMITS) {
   const text = String((body && body.text) || '').trim();
   if (!text) return { ok: false, error: 'empty', status: 400 };
   if (text.length > limits.MAX_TEXT) return { ok: false, error: 'too_long', status: 413 };
-  const name = flat((body && body.name) || '').slice(0, limits.MAX_NAME);
+  const name = stripMrkdwn(flat((body && body.name) || '')).slice(0, limits.MAX_NAME).trim();
   const sdk = flat((body && body.sdk) || '').slice(0, limits.MAX_SDK);
   const rawCtx = body && body.context && typeof body.context === 'object' ? body.context : {};
   const context = {};
-  for (const k of Object.keys(rawCtx).slice(0, limits.MAX_CTX_KEYS)) {
-    context[flat(k).slice(0, limits.MAX_CTX_KEY)] = flat(rawCtx[k]).slice(0, limits.MAX_CTX_VAL);
+  for (const k of Object.keys(rawCtx)) {
+    if (Object.keys(context).length >= limits.MAX_CTX_KEYS) break;
+    const key = flat(k).slice(0, limits.MAX_CTX_KEY);
+    /* вырожденные (пустые после нормализации) и коллапсирующие ключи — пропуск,
+       первый выигрывает: молчаливую перезапись значений не допускаем (#5) */
+    if (!key || key in context) continue;
+    context[key] = flat(rawCtx[k]).slice(0, limits.MAX_CTX_VAL);
   }
   return { ok: true, data: { text, name, sdk, context } };
 }
 
-/* Сообщение для chat.postMessage: текст + metadata-маркер для свипа. */
-export function buildSlackMessage(projectId, cfg, { text, name, sdk, context }) {
+/* Сообщение для chat.postMessage: текст + metadata-маркер для свипа.
+ * Итоговый text укладывается в LIMITS.MAX_MSG: esc() раздувает худший случай
+ * (`<` → `&lt;`) до ~4×, и текст+контекст по отдельным лимитам могут суммарно
+ * превысить Slack-обрезку ~40k. Заголовок и текст отзыва влезают всегда
+ * (≤ ~20.5k после esc); контекст добавляется построчно, пока есть бюджет (#6). */
+export function buildSlackMessage(projectId, cfg, { text, name, sdk, context }, limits = LIMITS) {
   const head = `${cfg.emoji || '📝'} *${esc(cfg.title || projectId)} — отзыв*` +
     (name ? ` · от *${esc(name)}*` : '');
-  const ctxLines = Object.entries(context)
-    .map(([k, v]) => `• *${esc(k)}:* ${esc(v)}`)
-    .join('\n');
+  const base = `${head}\n>>> ${esc(text)}`;
+
+  const TRUNC = '_…контекст обрезан_';
+  let ctxBlock = '';
+  let used = base.length + 2; // разделитель '\n\n' перед контекстом
+  for (const [k, v] of Object.entries(context)) {
+    const line = `• *${esc(k)}:* ${esc(v)}`;
+    if (used + line.length + 1 > limits.MAX_MSG - TRUNC.length - 1) {
+      ctxBlock += (ctxBlock ? '\n' : '') + TRUNC;
+      break;
+    }
+    ctxBlock += (ctxBlock ? '\n' : '') + line;
+    used += line.length + 1;
+  }
+
   return {
     channel: cfg.channel,
-    text: `${head}\n>>> ${esc(text)}` + (ctxLines ? `\n\n${ctxLines}` : ''),
+    text: base + (ctxBlock ? `\n\n${ctxBlock}` : ''),
     unfurl_links: false,
     unfurl_media: false,
     metadata: {
@@ -128,6 +164,46 @@ export function buildSlackMessage(projectId, cfg, { text, name, sdk, context }) 
       event_payload: { project: projectId, sdk: sdk || '' },
     },
   };
+}
+
+/* Доставка с одним ретраем (#7): транзиентные 429 (уважая Retry-After, cap 2 c)
+ * и 5xx/сетевые — повторяем ровно один раз; логические ошибки Slack
+ * (200 + ok:false: invalid_auth, channel_not_found…) не ретраим.
+ * fetchFn/sleepFn инжектируются в тестах. */
+export async function postToSlack(payload, token, { fetchFn, sleepFn } = {}) {
+  const doFetch = fetchFn || fetch;
+  const sleep = sleepFn || ((ms) => new Promise((res) => setTimeout(res, ms)));
+  const attempt = async () => {
+    const r = await doFetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    let out = null;
+    try { out = await r.json(); } catch { /* не-JSON от Slack — считаем ошибкой уровня HTTP */ }
+    return { r, out };
+  };
+
+  let res = null;
+  try { res = await attempt(); } catch { /* сетевая ошибка — ретраибельна */ }
+  if (res && res.r.ok && res.out && res.out.ok === true) return { ok: true };
+
+  const retriable = !res || res.r.status === 429 || res.r.status >= 500;
+  if (retriable) {
+    const retryAfterSec = res && Number(res.r.headers && res.r.headers.get('Retry-After'));
+    const delay = res && res.r.status === 429
+      ? Math.min((retryAfterSec > 0 ? retryAfterSec : 1) * 1000, 2000)
+      : 500;
+    await sleep(delay);
+    try { res = await attempt(); } catch { res = null; }
+    if (res && res.r.ok && res.out && res.out.ok === true) return { ok: true };
+  }
+
+  if (!res) return { ok: false, error: 'relay_failed' };
+  return { ok: false, error: 'slack_' + ((res.out && res.out.error) || res.r.status) };
 }
 
 function json(obj, status = 200) {
@@ -169,26 +245,16 @@ export default {
     if (ip && rateLimitedFallback(rlKey, Date.now(), perMin))
       return json({ ok: false, error: 'rate' }, 429);
 
+    /* дешёвый отсев до чтения тела; истина в байтах — внутри parsePayload (#6) */
+    const declared = Number(request.headers.get('Content-Length') || 0);
+    if (declared > LIMITS.MAX_BODY) return json({ ok: false, error: 'too_long' }, 413);
+
     const parsed = parsePayload(await request.text());
     if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
 
-    let r, out;
-    try {
-      r = await fetch('https://slack.com/api/chat.postMessage', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-        },
-        body: JSON.stringify(buildSlackMessage(projectId, cfg, parsed.data)),
-      });
-      out = await r.json();
-    } catch {
-      return json({ ok: false, error: 'relay_failed' }, 502);
-    }
-    /* chat.postMessage отвечает 200 и ok:false при ошибке — проверяем оба слоя */
-    if (!r.ok || !out || out.ok !== true)
-      return json({ ok: false, error: 'slack_' + ((out && out.error) || r.status) }, 502);
+    const sent = await postToSlack(
+      buildSlackMessage(projectId, cfg, parsed.data), env.SLACK_BOT_TOKEN);
+    if (!sent.ok) return json({ ok: false, error: sent.error }, 502);
     return json({ ok: true });
   },
 };
