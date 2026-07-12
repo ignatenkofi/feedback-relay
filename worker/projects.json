@@ -1,0 +1,13 @@
+{
+  "_comment": "Реестр проектов feedback-relay. Новый проект = запись здесь (через PR) + сниппет на странице; деплой воркера подхватывает конфиг. Ключи с '_' игнорируются роутером.",
+  "_schema": "id → { origins: [host | *.wildcard | 'null' для офлайн file://], channel: Slack channel ID (бот должен быть приглашён), repo: owner/name для триаж-issues, title, emoji, rate?: {perMin} }",
+
+  "unevie": {
+    "origins": ["unevie.pages.dev", "*.unevie.pages.dev", "null"],
+    "channel": "CHANNEL_ID_UNEVIE_FEEDBACK",
+    "repo": "ignatenkofi/unevie",
+    "title": "ЖИЗНЬ",
+    "emoji": "📖",
+    "rate": { "perMin": 6 }
+  }
+}

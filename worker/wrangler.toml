@@ -1,0 +1,17 @@
+name = "feedback-relay"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# Секрет задаётся НЕ здесь: `wrangler secret put SLACK_BOT_TOKEN` (xoxb-токен
+# Slack App с правами chat:write + metadata; бот приглашён в каналы *-feedback).
+# GitHub-кредов у воркера нет по дизайну — issues создаёт триаж-Routine.
+
+# Кросс-изолятный rate limit (Workers Rate Limiting API), ключ `${project}:${ip}`.
+# Уезжает обычным `wrangler deploy`; правило WAF в дашборде не обязательно.
+# namespace_id — произвольный уникальный числовой id в пределах аккаунта
+# (1001 занят unevie-feedback, пока тот жив как legacy-прокси).
+[[unsafe.bindings]]
+name = "FEEDBACK_RL"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 6, period = 60 }
