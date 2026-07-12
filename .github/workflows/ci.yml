@@ -1,0 +1,34 @@
+# Офлайн-проверки: юнит-тесты чистых функций защиты воркера, синтаксис SDK,
+# валидность реестра проектов. Интеграционные тесты (miniflare) — этап M1.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 'lts/*' }
+      - name: Worker unit tests
+        run: node --test worker/test/worker.test.mjs
+        working-directory: .
+      - name: SDK syntax + client_empty smoke
+        run: |
+          node --check sdk/feedback.js
+          node -e "require('./sdk/feedback.js').send('https://x','p',{text:''}).then(()=>{process.exit(1)},e=>{if(e.code!=='client_empty')process.exit(1)})"
+      - name: projects.json parses, only known keys
+        run: |
+          node -e "
+            const p = JSON.parse(require('fs').readFileSync('worker/projects.json','utf8'));
+            const known = new Set(['origins','channel','repo','title','emoji','rate']);
+            for (const [id,cfg] of Object.entries(p)) {
+              if (id.startsWith('_')) continue;
+              if (!Array.isArray(cfg.origins) || !cfg.channel || !cfg.repo) { console.error('bad project', id); process.exit(1); }
+              for (const k of Object.keys(cfg)) if (!known.has(k)) { console.error('unknown key', id+'.'+k); process.exit(1); }
+            }
+            console.log('projects.json OK');
+          "
