@@ -20,15 +20,41 @@ jobs:
         run: |
           node --check sdk/feedback.js
           node -e "require('./sdk/feedback.js').send('https://x','p',{text:''}).then(()=>{process.exit(1)},e=>{if(e.code!=='client_empty')process.exit(1)})"
-      - name: projects.json parses, only known keys
+      - name: projects.json valid (keys, channel format, rate ceiling)
         run: |
           node -e "
-            const p = JSON.parse(require('fs').readFileSync('worker/projects.json','utf8'));
-            const known = new Set(['origins','channel','repo','title','emoji','rate']);
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('worker/projects.json','utf8'));
+            const known = new Set(['origins','channel','repo','title','emoji','rate','_draft']);
+            // #22: кросс-изолятный потолок rate-limit из wrangler.toml. perMin выше него
+            // binding обеспечить не может (best-effort только внутри изолята) — не пропускаем молча.
+            const toml = fs.readFileSync('worker/wrangler.toml','utf8');
+            const cm = toml.match(/simple\s*=\s*\{[^}]*limit\s*=\s*(\d+)/);
+            if (!cm) { console.error('cannot read ratelimit binding ceiling from wrangler.toml'); process.exit(1); }
+            const ceiling = Number(cm[1]);
+            let bad = false;
             for (const [id,cfg] of Object.entries(p)) {
               if (id.startsWith('_')) continue;
-              if (!Array.isArray(cfg.origins) || !cfg.channel || !cfg.repo) { console.error('bad project', id); process.exit(1); }
-              for (const k of Object.keys(cfg)) if (!known.has(k)) { console.error('unknown key', id+'.'+k); process.exit(1); }
+              if (!Array.isArray(cfg.origins) || !cfg.channel || !cfg.repo) { console.error('bad project', id); bad = true; continue; }
+              for (const k of Object.keys(cfg)) if (!known.has(k)) { console.error('unknown key', id+'.'+k); bad = true; }
+              if ('_draft' in cfg && typeof cfg._draft !== 'boolean') { console.error('_draft must be boolean:', id); bad = true; }
+              // #13: реальный channel ID (/^C[A-Z0-9]{6,}$/) ИЛИ явный черновик (воркер отвечает 404)
+              if (!cfg._draft && !/^C[A-Z0-9]{6,}$/.test(cfg.channel)) {
+                console.error('bad channel for', id, '- need /^C[A-Z0-9]{6,}$/ or _draft:true, got', cfg.channel); bad = true;
+              }
+              // #22: perMin, который binding не в состоянии обеспечить
+              if (cfg.rate && Number(cfg.rate.perMin) > ceiling) {
+                console.error('rate.perMin', cfg.rate.perMin, 'for', id, 'exceeds binding ceiling', ceiling, '(wrangler.toml / DESIGN.md 8)'); bad = true;
+              }
             }
-            console.log('projects.json OK');
+            if (bad) process.exit(1);
+            console.log('projects.json OK (rate ceiling', ceiling + '/min)');
           "
+      - name: Worker config builds (wrangler dry-run, no account/secrets)
+        # #13: ловит синтаксис wrangler.toml и несовместимость import attributes с версией
+        # wrangler. --dry-run компилирует бандл без деплоя/аккаунта — offline-friendly.
+        run: npx --yes 'wrangler@^4' deploy --dry-run --outdir /tmp/relay-build
+        working-directory: worker
+        env:
+          CI: 'true'
+          WRANGLER_SEND_METRICS: 'false'

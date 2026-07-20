@@ -10,8 +10,9 @@
  *   • GitHub-кредов здесь нет: issues создаёт триаж-Routine, не relay.
  *   • Защита унаследована от unevie/feedback-worker и обобщена per-project:
  *     origin-allowlist (wildcard + 'null' для офлайн file://), санитизация от
- *     подделки Slack-разметки, жёсткие лимиты длины, rate limit в три слоя
- *     (CF ratelimit-binding по project:ip → per-project квота → in-isolate фолбэк).
+ *     подделки Slack-разметки, жёсткие лимиты длины, rate limit: кросс-изолятный
+ *     CF ratelimit-binding по project:ip — фиксированный потолок (wrangler.toml) +
+ *     best-effort in-isolate ужатие по cfg.rate.perMin (ниже потолка, не выше; #22).
  */
 import PROJECTS from './projects.json' with { type: 'json' };
 
@@ -23,7 +24,11 @@ const CORS = {
 
 /* лимиты полезной нагрузки — дефолты, при необходимости сужаются per-project */
 export const LIMITS = {
-  MAX_BODY: 32 * 1024, // байт на всё тело
+  /* байт на ВСЁ тело (UTF-8) — DoS-guard, не пофилдовой лимит. Порог с запасом
+     покрывает сумму документированных пофилдовых максимумов даже в кириллице/
+     эмодзи (2–4 байта/символ ≈ 34–68 КБ), иначе формально валидный payload ловил
+     бы 413 из-за алфавита (#21). Бюджет собранного сообщения держит MAX_MSG. */
+  MAX_BODY: 96 * 1024,
   MAX_TEXT: 4000,      // символов отзыва
   MAX_NAME: 80,        // имя
   MAX_CTX_KEYS: 20,    // ключей контекста
@@ -61,6 +66,9 @@ export function resolveProject(projectId, projects = PROJECTS) {
   if (!projectId || typeof projectId !== 'string') return null;
   const cfg = projects[projectId];
   if (!cfg || typeof cfg !== 'object' || projectId.startsWith('_')) return null;
+  /* черновик реестра (#13): запись есть, но канал ещё плейсхолдер — воркер обязан
+     отвечать 404, а не слать в несуществующий канал (иначе Slack вернёт 502). */
+  if (cfg._draft) return null;
   return cfg;
 }
 
@@ -244,6 +252,9 @@ export default {
         if (!success) return json({ ok: false, error: 'rate' }, 429);
       } catch { /* биндинг недоступен (локальный dev) — работает фолбэк ниже */ }
     }
+    /* cfg.rate.perMin — best-effort ужатие ВНУТРИ изолята: опускает эффективный
+       лимит ниже кросс-изолятного binding-потолка (wrangler.toml, сейчас 6/мин),
+       но поднять выше него не может. CI (#22) отклоняет perMin больше потолка. */
     const perMin = (cfg.rate && cfg.rate.perMin) || undefined;
     if (ip && rateLimitedFallback(rlKey, Date.now(), perMin))
       return json({ ok: false, error: 'rate' }, 429);

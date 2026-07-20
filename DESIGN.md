@@ -67,10 +67,14 @@ relay) → Slack (карантин/триаж) → Claude Routine → GitHub iss
 
 ```
 POST /v1/f/{projectId}          Content-Type: application/json
-{ "text": string,               // required, ≤4000
-  "name": string?,              // ≤80
-  "context": {k:v}?,            // ≤20 ключей, k≤40, v≤600
+{ "text": string,               // required, ≤4000 символов
+  "name": string?,              // ≤80 символов
+  "context": {k:v}?,            // ≤20 ключей, k≤40, v≤600 символов
   "sdk": string? }              // версия SDK (диагностика)
+// Пофилдовые лимиты — в символах. Всё тело — ≤96 КБ в UTF-8-байтах (DoS-guard,
+// `MAX_BODY`): порог с запасом покрывает сумму пофилдовых максимумов даже в
+// кириллице/эмодзи (2–4 байта/символ), поэтому формально валидный payload не
+// ловит 413 из-за алфавита (#21). Бюджет собранного Slack-сообщения — MAX_MSG.
 → 200 {ok:true}
 → 400 empty|bad_json · 403 origin · 404 unknown_project (и на кривой путь —
   реестр не раскрываем) · 405 method · 413 too_long · 429 rate ·
@@ -90,7 +94,8 @@ POST /v1/f/{projectId}          Content-Type: application/json
   "channel": "C0…",              // Slack channel ID, бот приглашён
   "repo":    "ignatenkofi/unevie",  // куда триаж создаёт issues
   "title":   "ЖИЗНЬ", "emoji": "📖",
-  "rate":    { "perMin": 6 }     // опционально, поверх дефолтов
+  "rate":    { "perMin": 6 }     // best-effort ужатие в пределах изолята;
+                                 // ≤ кросс-изолятного потолка binding (wrangler.toml)
 }
 ```
 
@@ -127,8 +132,13 @@ POST /v1/f/{projectId}          Content-Type: application/json
 форма без зависимостей, ≤10 КБ, light/dark · честный ответ пользователю
 «отправлено / не отправлено».
 
-**Безопасность:** rate limit тремя слоями (binding `project:ip` → per-project
-квота → in-isolate фолбэк) — один проект не съедает лимиты остальных ·
+**Безопасность:** rate limit — кросс-изолятный binding `project:ip` как
+**фиксированный потолок** (сейчас 6/мин для всех проектов, `wrangler.toml`) +
+`rate.perMin` как **best-effort** ужатие в пределах изолята (может опустить
+эффективный лимит ниже потолка, поднять выше — нет; кросс-изолятно после рецикла
+изолята дрейфует к потолку). Ключ `project:ip` — один проект не съедает лимиты
+остальных. `perMin` больше потолка binding отклоняет CI (#22). Реальная
+per-tier-квота (несколько namespace) — при необходимости, отдельным шагом ·
 санитизация до Slack-разметки; экранирование GitHub-markdown — на стороне
 Routine · 404 на неизвестный projectId · секрет-ротация без редеплоя
 проектов · воркер не логирует тела запросов.
