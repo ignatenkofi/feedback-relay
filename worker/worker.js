@@ -35,9 +35,21 @@ export const LIMITS = {
   MAX_CTX_KEY: 40,     // длина ключа
   MAX_CTX_VAL: 600,    // длина значения (длинные коды состояния — как фраза-сейв unevie)
   MAX_SDK: 40,         // строка версии SDK
-  /* бюджет СОБРАННОГО сообщения: Slack режет text на ~40k, оставляем запас;
-     текст отзыва после esc() ≤ ~20k, остаток бюджета получает контекст (#6) */
+  /* бюджет notification-fallback (top-level text): с переходом на Block Kit (#10)
+     text больше не несёт контекст — только заголовок-сигнатура + превью отзыва,
+     поэтому влезает с гигантским запасом; порог оставлен как sanity-ceiling */
   MAX_MSG: 38000,
+};
+
+/* Лимиты Slack Block Kit (#10) — по объектам, а не на всё сообщение:
+ *  • section.text ≤ 3000 символов, section.fields[*].text ≤ 2000, ≤ 10 fields/section;
+ *  • контекст бьётся на группы по FIELDS_PER_SECTION (несколько section-блоков);
+ *  • TEXT_FALLBACK — сколько символов отзыва кладём в notification-превью. */
+export const BLOCK_LIMITS = {
+  SECTION_TEXT: 3000,
+  FIELD_TEXT: 2000,
+  FIELDS_PER_SECTION: 10,
+  TEXT_FALLBACK: 200,
 };
 
 /* in-isolate фолбэк rate limit'а (пер-изолятный — только смягчение; основной
@@ -142,32 +154,61 @@ export function parsePayload(raw, limits = LIMITS) {
   return { ok: true, data: { text, name, sdk, context } };
 }
 
-/* Сообщение для chat.postMessage: текст + metadata-маркер для свипа.
- * Итоговый text укладывается в LIMITS.MAX_MSG: esc() раздувает худший случай
- * (`<` → `&lt;`) до ~4×, и текст+контекст по отдельным лимитам могут суммарно
- * превысить Slack-обрезку ~40k. Заголовок и текст отзыва влезают всегда
- * (≤ ~20.5k после esc); контекст добавляется построчно, пока есть бюджет (#6). */
-export function buildSlackMessage(projectId, cfg, { text, name, sdk, context }, limits = LIMITS) {
+/* Обрезка уже-экранированной строки под лимит Block Kit без порчи суррогатных
+ * пар (эмодзи) и висячих HTML-сущностей (`&lt;` не режем посередине — иначе в
+ * канал утечёт `&l`). Возвращает строку длиной ≤ max. */
+export function clipEscaped(s, max, marker = '…') {
+  if (s.length <= max) return s;
+  let out = s.slice(0, Math.max(0, max - marker.length));
+  const last = out.charCodeAt(out.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1); // не рвём суррогатную пару
+  const amp = out.lastIndexOf('&');
+  if (amp !== -1 && !out.slice(amp).includes(';')) out = out.slice(0, amp); // висячая сущность
+  return out + marker;
+}
+
+/* Сообщение для chat.postMessage: Block Kit `blocks` + notification-fallback `text`
+ * + metadata-маркер для свипа. Структура блоков (#10):
+ *   1) section — заголовок (эмодзи + *title — отзыв* [· от *name*]);
+ *   2) section — цитата отзыва (`>>> …`): в Block Kit `>>>` ограничен своим
+ *      блоком и больше НЕ «съедает» контекст — в этом суть #10;
+ *   3) section.fields — контекст парами, группами по BLOCK_LIMITS.FIELDS_PER_SECTION;
+ *   4) context — подвал (проект + версия SDK).
+ * Каждый text-объект обрезается под свой лимит Block Kit (section ≤ 3000, field
+ * ≤ 2000). `text` несёт заголовок-сигнатуру первой строкой (фолбэк-детект свипа
+ * из #9: `^. \*.+ — отзыв\*`) + ~200 символов отзыва для push-нотификации. */
+export function buildSlackMessage(projectId, cfg, { text, name, sdk, context }, limits = BLOCK_LIMITS) {
   const head = `${cfg.emoji || '📝'} *${esc(cfg.title || projectId)} — отзыв*` +
     (name ? ` · от *${esc(name)}*` : '');
-  const base = `${head}\n>>> ${esc(text)}`;
 
-  const TRUNC = '_…контекст обрезан_';
-  let ctxBlock = '';
-  let used = base.length + 2; // разделитель '\n\n' перед контекстом
-  for (const [k, v] of Object.entries(context)) {
-    const line = `• *${esc(k)}:* ${esc(v)}`;
-    if (used + line.length + 1 > limits.MAX_MSG - TRUNC.length - 1) {
-      ctxBlock += (ctxBlock ? '\n' : '') + TRUNC;
-      break;
-    }
-    ctxBlock += (ctxBlock ? '\n' : '') + line;
-    used += line.length + 1;
+  const blocks = [
+    { type: 'section', text: { type: 'mrkdwn', text: head } },
+    { type: 'section', text: { type: 'mrkdwn', text: clipEscaped(`>>> ${esc(text)}`, limits.SECTION_TEXT) } },
+  ];
+
+  /* контекст → section.fields по 10 штук (лимит Block Kit); каждое поле
+     `*ключ:*\nзначение` обрезается под лимит поля. */
+  const entries = Object.entries(context);
+  for (let i = 0; i < entries.length; i += limits.FIELDS_PER_SECTION) {
+    const fields = entries.slice(i, i + limits.FIELDS_PER_SECTION).map(([k, v]) => ({
+      type: 'mrkdwn',
+      text: clipEscaped(`*${esc(k)}:*\n${esc(v)}`, limits.FIELD_TEXT),
+    }));
+    blocks.push({ type: 'section', fields });
   }
+
+  /* подвал — context-блок (мелкий шрифт): проект + версия SDK */
+  const foot = `проект: \`${esc(projectId)}\`` + (sdk ? ` · SDK ${esc(sdk)}` : '');
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: clipEscaped(foot, limits.SECTION_TEXT) }] });
+
+  /* text — notification-fallback. Первая строка = заголовок-сигнатура (#9 не
+     ломаем, если metadata не видна MCP), затем превью отзыва. */
+  const fallback = `${head}\n${clipEscaped(esc(text), limits.TEXT_FALLBACK)}`;
 
   return {
     channel: cfg.channel,
-    text: base + (ctxBlock ? `\n\n${ctxBlock}` : ''),
+    text: fallback,
+    blocks,
     unfurl_links: false,
     unfurl_media: false,
     metadata: {

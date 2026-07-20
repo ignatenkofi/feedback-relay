@@ -104,10 +104,14 @@ POST /v1/f/{projectId}          Content-Type: application/json
 
 ## 6. Slack-формат
 
-`chat.postMessage` в канал проекта:
+`chat.postMessage` в канал проекта — **Block Kit** `blocks` (#10):
 
-- текст: `{emoji} *{title} — отзыв* · от *{name}*` → цитата `>>>` → контекст
-  списком `• *ключ:* значение`;
+- section-заголовок `{emoji} *{title} — отзыв* · от *{name}*` → section-цитата
+  `>>> {текст}` → section.fields контекст парами `*ключ:*\nзначение` (группами
+  по 10 — лимит Block Kit) → context-подвал `проект: {id} · SDK {версия}`;
+  каждый section — свой блок, поэтому `>>>` больше не «съедает» контекст;
+- top-level `text` — notification-fallback: первой строкой заголовок-сигнатура
+  (её матчит фолбэк-детект свипа из #9), затем ~200 символов отзыва;
 - **metadata** `event_type: feedback_v1`, `event_payload: {project, sdk}` —
   свип отличает фидбек от людской болтовни в канале без парсинга текста;
 - обсуждение/уточнения — в треде сообщения;
