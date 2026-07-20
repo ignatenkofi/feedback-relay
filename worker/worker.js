@@ -50,8 +50,9 @@ export const esc = (s) =>
 export const flat = (s) =>
   String(s).replace(/[\u0000-\u001F\u007F\u0085\u2028\u2029]+/g, ' ').trim();
 
-/* mrkdwn-спецсимволы — только для имени: оно единственное вставляется внутрь
-   чужой разметки (*…* в заголовке), `>` уже нейтрализует esc() (#5) */
+/* mrkdwn-спецсимволы — для полей, вставляемых внутрь чужой разметки *…*:
+   имя (заголовок) и ключ контекста (`• *${k}:*`); `>` уже нейтрализует
+   esc() (#5, #18) */
 export const stripMrkdwn = (s) => String(s).replace(/[*_~`]/g, '');
 
 const byteLen = (s) => new TextEncoder().encode(s).byteLength;
@@ -122,7 +123,9 @@ export function parsePayload(raw, limits = LIMITS) {
   const context = {};
   for (const k of Object.keys(rawCtx)) {
     if (Object.keys(context).length >= limits.MAX_CTX_KEYS) break;
-    const key = flat(k).slice(0, limits.MAX_CTX_KEY);
+    /* stripMrkdwn как для name: ключ вставляется внутрь *…* в buildSlackMessage
+       (`• *${k}:*`), иначе `*` в ключе закрывает bold досрочно (#18) */
+    const key = stripMrkdwn(flat(k)).slice(0, limits.MAX_CTX_KEY);
     /* вырожденные (пустые после нормализации) и коллапсирующие ключи — пропуск,
        первый выигрывает: молчаливую перезапись значений не допускаем (#5) */
     if (!key || key in context) continue;
