@@ -1,0 +1,18 @@
+# legacy-unevie-proxy — деплоится ПОВЕРХ старого воркера unevie-feedback.
+# То же имя = тот же URL `unevie-feedback.<acc>.workers.dev`, вшитый в розданные
+# офлайн-файлы книги. `wrangler deploy` здесь заменяет старый код прокси-версией.
+name = "unevie-feedback"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# Куда проксировать. НЕ секрет (обычный URL) → var, а не `wrangler secret`.
+# ВЛАДЕЛЕЦ: подставить реальный сабдомен relay перед деплоем (см. README).
+[vars]
+RELAY_ENDPOINT = "https://feedback-relay.<your-subdomain>.workers.dev/v1/f/unevie"
+
+# Rate-limit binding здесь НЕ объявляем: прокси stateless, а лимитирует relay —
+# по проброшенному CF-Connecting-IP (ключ project:ip). Двойной лимит только резал
+# бы легитимный трафик. Старый namespace 1001 тем самым освобождается.
+# NB: worker/wrangler.toml (relay) в комментарии всё ещё пишет «1001 занят
+# unevie-feedback» — после этого деплоя запись устаревает; relay использует 1002,
+# конфликта нет. Правку того комментария оставляю владельцу (не трогаю relay в этом PR).
