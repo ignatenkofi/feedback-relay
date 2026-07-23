@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FeedbackRelay.mount() — демо</title>
+  <style>
+    body { font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) { body { background: #14171c; color: #e8ebef; } }
+    h1 { font-size: 22px; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 13px; }
+    input, select { width: 100%; box-sizing: border-box; padding: 8px; font: inherit;
+                    border: 1px solid #99a; border-radius: 6px; background: transparent; color: inherit; }
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+    button.demo { margin-top: 16px; padding: 8px 14px; font: inherit; cursor: pointer;
+                  border: 1px solid #99a; border-radius: 6px; background: transparent; color: inherit; }
+    code { background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 4px; }
+    .note { font-size: 13px; color: #667; margin-top: 24px; border-top: 1px solid #99a3; padding-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>FeedbackRelay.mount() — ручное демо</h1>
+  <p>Оверлей-форма из коробки (issue #3). Меняй параметры и нажми
+     «(Пере)собрать форму» — появится плавающая кнопка внизу справа.</p>
+
+  <label for="endpoint">Endpoint (базовый URL воркера, без пути)</label>
+  <input id="endpoint" value="http://localhost:8787">
+
+  <div class="row">
+    <div>
+      <label for="project">projectId</label>
+      <input id="project" value="unevie">
+    </div>
+    <div>
+      <label for="theme">theme</label>
+      <select id="theme">
+        <option value="auto">auto (prefers-color-scheme)</option>
+        <option value="light">light</option>
+        <option value="dark">dark</option>
+      </select>
+    </div>
+    <div>
+      <label for="lang">lang</label>
+      <select id="lang">
+        <option value="">auto (&lt;html lang&gt;)</option>
+        <option value="ru">ru</option>
+        <option value="en">en</option>
+      </select>
+    </div>
+  </div>
+
+  <button class="demo" id="remount">(Пере)собрать форму</button>
+  <button class="demo" id="openBtn">Открыть программно (open())</button>
+  <span id="bound-example" style="margin-left:8px"></span>
+
+  <p class="note">
+    Тест против локального воркера: <code>cd worker &amp;&amp; npx wrangler dev</code>
+    (слушает <code>http://localhost:8787</code>). Воркер должен иметь секрет
+    <code>SLACK_BOT_TOKEN</code> и запись проекта в <code>projects.json</code>,
+    чьи <code>origins</code> допускают origin этой страницы
+    (<code>"null"</code> — если открыть demo.html как <code>file://</code>).
+    Без этого воркер честно ответит <code>403 origin</code> / <code>404</code> /
+    <code>500 not_configured</code>, а форма покажет «не отправилось» —
+    это ожидаемо и проверяет обработку ошибок.
+  </p>
+
+  <!-- ядро сначала, затем надстройка-форма -->
+  <script src="feedback.js"></script>
+  <script src="feedback-form.js"></script>
+  <script>
+    var handle = null;
+    function build() {
+      if (handle) handle.destroy();
+      var theme = document.getElementById('theme').value;
+      var lang = document.getElementById('lang').value;
+      handle = FeedbackRelay.mount({
+        endpoint: document.getElementById('endpoint').value,
+        project: document.getElementById('project').value,
+        theme: theme === 'auto' ? undefined : theme,
+        lang: lang || undefined,
+        // контекст собирается в момент отправки — актуальное состояние страницы
+        context: function () {
+          return { экран: 'demo.html', тема: theme, ширина: String(window.innerWidth) };
+        },
+      });
+    }
+    document.getElementById('remount').addEventListener('click', build);
+    document.getElementById('openBtn').addEventListener('click', function () {
+      if (handle) handle.open();
+    });
+    build(); // собрать при загрузке
+  </script>
+</body>
+</html>

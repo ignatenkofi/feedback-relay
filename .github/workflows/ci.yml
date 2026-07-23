@@ -19,7 +19,11 @@ jobs:
       - name: SDK syntax + client_empty smoke
         run: |
           node --check sdk/feedback.js
+          node --check sdk/feedback-form.js
           node -e "require('./sdk/feedback.js').send('https://x','p',{text:''}).then(()=>{process.exit(1)},e=>{if(e.code!=='client_empty')process.exit(1)})"
+      - name: SDK form unit tests (pure helpers; DOM — вручную через sdk/demo.html)
+        run: node --test sdk/test/form.test.js
+        working-directory: .
       - name: projects.json valid (keys, channel format, rate ceiling)
         run: |
           node -e "
