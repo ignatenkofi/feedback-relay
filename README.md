@@ -20,7 +20,7 @@ GitHub issues  ◀─  Claude Routine (свип, ✅-протокол)  ◀─�
 |---|---|
 | `DESIGN.md` | архитектура, принятые решения, контракты, требования, этапы |
 | `worker/` | multi-tenant CF Worker + реестр `projects.json` + тесты + деплой |
-| `sdk/` | `feedback.js` — headless-ядро для страниц (форма-оверлей — M3) |
+| `sdk/` | `feedback.js` — headless-ядро; `feedback-form.js` — готовая форма-оверлей (`mount`); `demo.html` |
 | `triage/ROUTINE.md` | протокол триаж-свипа Slack → GitHub для Claude Routine |
 
 ## Быстрый старт

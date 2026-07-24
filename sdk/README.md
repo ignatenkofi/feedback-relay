@@ -40,6 +40,41 @@ sendFeedback('Отличная книга!', 'Тестер')
 разумный минимум — различать «отправлено», «слишком часто» (`rate`) и «не
 дошло, попробуйте позже» (всё остальное).
 
+## Готовая форма-оверлей (`mount`, M3)
+
+`feedback-form.js` — опциональная надстройка над ядром: кнопка + модальный
+оверлей (textarea + опц. имя) из коробки, для проектов **без своего UI**. unevie
+её не подключает — у него свой диалог поверх только `send()` (DESIGN.md §2 п.4).
+Грузится вторым скриптом, добавляет `FeedbackRelay.mount`:
+
+```html
+<script src="feedback.js"></script>       <!-- ядро: FeedbackRelay.send -->
+<script src="feedback-form.js"></script>  <!-- надстройка: FeedbackRelay.mount -->
+<script>
+  var handle = FeedbackRelay.mount({
+    endpoint: 'https://feedback-relay.<acc>.workers.dev',
+    project:  'unevie',
+    theme:    'auto',                       // 'auto' (по умолч.) | 'light' | 'dark'
+    lang:     'ru',                         // 'ru' | 'en' | (авто по <html lang>)
+    context:  function () { return { экран: location.pathname }; }, // собирается при отправке
+  });
+  // handle.open() / handle.close() / handle.destroy() — программное управление
+</script>
+```
+
+**Опции:** `endpoint`, `project` (обязательны) · `button` — `false` (без кнопки,
+свой триггер через `handle.open()`), CSS-селектор или DOM-элемент (привязка к
+существующему), иначе плавающая кнопка · `labels` — переопределение любых
+подписей (встроенные наборы `ru`/`en`) · `theme` · `lang` · `context` — коллектор,
+вызывается в момент отправки · `timeoutMs` — проброс в `send()`.
+
+**Свойства:** без зависимостей, один вшитый `<style>`; light/dark по
+`prefers-color-scheme` с явным override в обе стороны; a11y — `role="dialog"`,
+`aria-modal`, focus-trap, Esc, возврат фокуса на триггер; три исхода различимы
+(«отправлено» / «слишком часто» = `rate` / «не дошло»). Ядро + форма ≤10 КБ в
+проде (терсер: 9.6 КБ, gzip: 6.6 КБ; ядро «~2 КБ» — это его minified/gzip, как и
+здесь). Ручное демо — `sdk/demo.html` против `wrangler dev`.
+
 ## Паттерны из unevie (рекомендуются)
 
 - Кнопка «Оставить отзыв» рендерится только при непустом `FEEDBACK_ENDPOINT` —

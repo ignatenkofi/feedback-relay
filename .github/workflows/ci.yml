@@ -16,10 +16,17 @@ jobs:
       - name: Worker unit tests
         run: node --test worker/test/worker.test.mjs
         working-directory: .
+      - name: Legacy unevie-proxy smoke (offline, injected fetch)
+        run: node --test worker/legacy-unevie-proxy/test/smoke.test.mjs
+        working-directory: .
       - name: SDK syntax + client_empty smoke
         run: |
           node --check sdk/feedback.js
+          node --check sdk/feedback-form.js
           node -e "require('./sdk/feedback.js').send('https://x','p',{text:''}).then(()=>{process.exit(1)},e=>{if(e.code!=='client_empty')process.exit(1)})"
+      - name: SDK form unit tests (pure helpers; DOM — вручную через sdk/demo.html)
+        run: node --test sdk/test/form.test.js
+        working-directory: .
       - name: projects.json valid (keys, channel format, rate ceiling)
         run: |
           node -e "
@@ -55,6 +62,13 @@ jobs:
         # wrangler. --dry-run компилирует бандл без деплоя/аккаунта — offline-friendly.
         run: npx --yes 'wrangler@^4' deploy --dry-run --outdir /tmp/relay-build
         working-directory: worker
+        env:
+          CI: 'true'
+          WRANGLER_SEND_METRICS: 'false'
+      - name: Legacy unevie-proxy config builds (wrangler dry-run, no account/secrets)
+        # #8: тот же оффлайн-гард для прокси — синтаксис wrangler.toml + сборка бандла.
+        run: npx --yes 'wrangler@^4' deploy --dry-run --outdir /tmp/proxy-build
+        working-directory: worker/legacy-unevie-proxy
         env:
           CI: 'true'
           WRANGLER_SEND_METRICS: 'false'
