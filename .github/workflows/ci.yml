@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Ручной запуск нужен деплою (см. джоб deploy): без него единственный способ
+  # выкатить реле — приложить к коду посторонний коммит. Это ломается в двух
+  # ровно тех случаях, когда выкатка и нужна срочно: после `wrangler rollback`
+  # (надо вернуть текущий main, а менять в нём нечего) и после смены секрета
+  # воркера (код тот же, а перевыкатить надо).
+  workflow_dispatch:
 
 jobs:
   test:
@@ -87,7 +93,14 @@ jobs:
   deploy:
     name: Deploy relay (owner-гейт)
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Условие держит ДВА инварианта, и второй важнее первого:
+    #   1. деплой не бежит на pull_request (в том числе из форка);
+    #   2. деплой возможен ТОЛЬКО с main — при ручном запуске `github.ref` равен
+    #      выбранной в UI ветке, поэтому dispatch с произвольной ветки честно
+    #      скипнется, а не выкатит непроверенный код в прод.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
