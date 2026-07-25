@@ -72,3 +72,45 @@ jobs:
         env:
           CI: 'true'
           WRANGLER_SEND_METRICS: 'false'
+
+  # Деплой РЕЛЕ (worker/) на push в main. До этого джоба смерженная правка
+  # `worker/projects.json` или `worker/worker.js` жила в main, но не в проде, пока
+  # кто-то не вспомнит про `wrangler deploy` — а dry-run выше доказывает лишь
+  # сборку. Больнее всего это на реестре: смержил тенанта, забыл задеплоить —
+  # тенант отдаёт 404, и узнаёшь от пользователя.
+  #
+  # Legacy-прокси (worker/legacy-unevie-proxy/) здесь НАМЕРЕННО не деплоится:
+  # он уезжает ПОВЕРХ живого воркера `unevie-feedback`, на который смотрит
+  # розданный URL, и такой шаг обязан оставаться осознанным (см. его README).
+  #
+  # Owner-гейт: без секретов CF джоб честно скипается, как pages.yml в атласе.
+  deploy:
+    name: Deploy relay (owner-гейт)
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Гейт публикации (секреты CF)
+        id: gate
+        env:
+          HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          if [ "$HAS_CF" != "true" ]; then
+            echo "::notice::секреты Cloudflare не выданы — деплой реле пропущен, нужен ручной 'wrangler deploy' в worker/"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Деплоим на каждый push в main, не пытаясь вычислить «менялся ли worker/»:
+      # checkout приходит глубиной 1, база `github.event.before` в клоне
+      # отсутствует, и такая проверка тихо деградировала бы. Повторный деплой
+      # неизменного кода — no-op новой версии, это дешевле хрупкой логики.
+      # Так же поступает unevie со своим Pages-деплоем.
+      - name: wrangler deploy (relay)
+        if: steps.gate.outputs.run == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
