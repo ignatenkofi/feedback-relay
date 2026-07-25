@@ -18,6 +18,15 @@ function fakeFetch(calls, resp) {
     return resp;
   };
 }
+/* fake service binding — прод-путь: env.RELAY.fetch, без инжекта doFetch */
+function fakeBinding(calls, resp) {
+  return {
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      return resp;
+    },
+  };
+}
 const relayJson = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -86,6 +95,29 @@ test('RELAY_ENDPOINT не задан → 500 not_configured, relay не дёрг
   assert.equal(res.status, 500);
   assert.deepEqual(await res.json(), { ok: false, error: 'not_configured' });
   assert.equal(calls.length, 0);
+});
+
+/* Прод-путь отдельно от инжекта: именно его отсутствие дало Error 1042 на живом
+   деплое 2026-07-25 — инжектированный fetch межворкерное ограничение не видит. */
+test('прод-путь: без инжекта запрос уходит через service binding env.RELAY', async () => {
+  const calls = [];
+  const res = await handleRequest(
+    req('POST', { 'Origin': 'null', 'CF-Connecting-IP': '203.0.113.7' }, '{"text":"x"}'),
+    { RELAY_ENDPOINT: ENDPOINT, RELAY: fakeBinding(calls, relayJson({ ok: true })) });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, ENDPOINT);                       // путь берётся из RELAY_ENDPOINT
+  assert.equal(calls[0].init.headers['Origin'], 'null');
+  assert.equal(calls[0].init.headers['CF-Connecting-IP'], '203.0.113.7');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+});
+
+test('биндинг RELAY не объявлен → 500 not_configured, а не 1042 на живом трафике', async () => {
+  const res = await handleRequest(
+    req('POST', { 'Origin': 'null' }, '{"text":"x"}'), { RELAY_ENDPOINT: ENDPOINT });
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { ok: false, error: 'not_configured' });
 });
 
 test('relay недоступен (fetch бросает) → 502 relay_failed', async () => {
