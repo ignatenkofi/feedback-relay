@@ -12,6 +12,18 @@ on:
   # воркера (код тот же, а перевыкатить надо).
   workflow_dispatch:
 
+# ОДНА версия wrangler на весь воркфлоу — и для dry-run в `test`, и для реального
+# деплоя. Иначе офлайн-гейт врёт, и это не гипотеза: джоб deploy не задавал версию
+# вовсе, wrangler-action ставил свой дефолтный 3.90.0, а dry-run бежал на 4.x.
+# Воркер импортирует реестр через import attributes (`with { type: 'json' }`),
+# которых wrangler 3 не понимает, — dry-run проходил, а деплой падал на сборке
+# («Expected ";" but found "with"»), уже в main.
+#
+# Версия закреплена точно, а не диапазоном: весь смысл гейта в том, что dry-run
+# собирает ТЕМ ЖЕ компилятором, что и деплой. Обновлять здесь, в одном месте.
+env:
+  WRANGLER_VERSION: '4.114.0'
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -66,14 +78,14 @@ jobs:
       - name: Worker config builds (wrangler dry-run, no account/secrets)
         # #13: ловит синтаксис wrangler.toml и несовместимость import attributes с версией
         # wrangler. --dry-run компилирует бандл без деплоя/аккаунта — offline-friendly.
-        run: npx --yes 'wrangler@^4' deploy --dry-run --outdir /tmp/relay-build
+        run: npx --yes "wrangler@$WRANGLER_VERSION" deploy --dry-run --outdir /tmp/relay-build
         working-directory: worker
         env:
           CI: 'true'
           WRANGLER_SEND_METRICS: 'false'
       - name: Legacy unevie-proxy config builds (wrangler dry-run, no account/secrets)
         # #8: тот же оффлайн-гард для прокси — синтаксис wrangler.toml + сборка бандла.
-        run: npx --yes 'wrangler@^4' deploy --dry-run --outdir /tmp/proxy-build
+        run: npx --yes "wrangler@$WRANGLER_VERSION" deploy --dry-run --outdir /tmp/proxy-build
         working-directory: worker/legacy-unevie-proxy
         env:
           CI: 'true'
@@ -124,6 +136,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
+          wranglerVersion: ${{ env.WRANGLER_VERSION }}
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
