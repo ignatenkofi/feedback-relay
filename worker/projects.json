@@ -4,11 +4,10 @@
 
   "unevie": {
     "origins": ["unevie.pages.dev", "*.unevie.pages.dev", "null"],
-    "channel": "CHANNEL_ID_UNEVIE_FEEDBACK",
+    "channel": "C0BCYPYFF2Q",
     "repo": "ignatenkofi/unevie",
     "title": "ЖИЗНЬ",
     "emoji": "📖",
-    "rate": { "perMin": 6 },
-    "_draft": true
+    "rate": { "perMin": 6 }
   }
 }
