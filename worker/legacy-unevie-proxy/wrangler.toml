@@ -6,9 +6,12 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 # Куда проксировать. НЕ секрет (обычный URL) → var, а не `wrangler secret`.
-# ВЛАДЕЛЕЦ: подставить реальный сабдомен relay перед деплоем (см. README).
+# Сабдомен взят из уже розданного офлайн-артефакта unevie
+# (`src/parts/09-engine-ui.js`: `unevie-feedback.ignatenkofi.workers.dev`) —
+# relay едет в тот же аккаунт, значит и сабдомен тот же. ВЛАДЕЛЕЦ: сверить с
+# URL, который напечатает `wrangler deploy` relay, и поправить, если отличается.
 [vars]
-RELAY_ENDPOINT = "https://feedback-relay.<your-subdomain>.workers.dev/v1/f/unevie"
+RELAY_ENDPOINT = "https://feedback-relay.ignatenkofi.workers.dev/v1/f/unevie"
 
 # Rate-limit binding здесь НЕ объявляем: прокси stateless, а лимитирует relay —
 # по проброшенному CF-Connecting-IP (ключ project:ip). Двойной лимит только резал
