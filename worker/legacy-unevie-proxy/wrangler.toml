@@ -5,11 +5,16 @@ name = "unevie-feedback"
 main = "worker.js"
 compatibility_date = "2025-06-01"
 
-# Куда проксировать. НЕ секрет (обычный URL) → var, а не `wrangler secret`.
-# Сабдомен взят из уже розданного офлайн-артефакта unevie
-# (`src/parts/09-engine-ui.js`: `unevie-feedback.ignatenkofi.workers.dev`) —
-# relay едет в тот же аккаунт, значит и сабдомен тот же. ВЛАДЕЛЕЦ: сверить с
-# URL, который напечатает `wrangler deploy` relay, и поправить, если отличается.
+# Транспорт до relay — service binding, а НЕ публичный fetch: межворкерный запрос
+# по `*.workers.dev` Cloudflare отклоняет с Error 1042 (поймано живым деплоем
+# 2026-07-25). `service` — имя воркера relay в этом же аккаунте.
+[[services]]
+binding = "RELAY"
+service = "feedback-relay"
+
+# Что проксировать: из этого URL берётся ПУТЬ (`/v1/f/unevie`) — по нему relay
+# роутит проект. Хост инертен: запрос идёт биндингом, в публичную сеть не выходит.
+# НЕ секрет (обычный URL) → var, а не `wrangler secret`.
 [vars]
 RELAY_ENDPOINT = "https://feedback-relay.ignatenkofi.workers.dev/v1/f/unevie"
 
