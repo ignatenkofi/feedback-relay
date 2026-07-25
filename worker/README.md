@@ -41,7 +41,7 @@ wrangler deploy
 ## Тесты
 
 ```bash
-node --test worker/test/       # чистые функции: origin/санитизация/лимиты/формат
+node --test worker/test/worker.test.mjs   # чистые функции: origin/санитизация/лимиты/формат
 ```
 
 Интеграционные тесты fetch-хендлера (miniflare/vitest) — этап M1.

@@ -16,12 +16,15 @@
 «живой» (реальный `channel`, снят `_draft`, бот приглашён в канал). Пока unevie
 в статусе `_draft`, relay отвечает на него 404, и прокси будет отдавать 404.
 
-1. **Подставить сабдомен relay.** В `wrangler.toml` заменить
-   `<your-subdomain>` в `RELAY_ENDPOINT` на реальный
-   (`https://feedback-relay.<acc>.workers.dev/v1/f/unevie`). Это URL, не секрет.
+1. **Сверить сабдомен relay.** `RELAY_ENDPOINT` в `wrangler.toml` уже
+   заполнен: `https://feedback-relay.ignatenkofi.workers.dev/v1/f/unevie`
+   (сабдомен тот же, что у старого `unevie-feedback` — relay едет в тот же
+   аккаунт). Это URL, не секрет. Сверить с URL, который напечатал
+   `wrangler deploy` relay; если сабдомен отличается — поправить здесь до
+   деплоя прокси, иначе прокси будет ходить в никуда.
 2. **Оффлайн-смоук (без сети/аккаунта).** Прогнать юнит-смоук прокси:
    ```bash
-   node --test worker/legacy-unevie-proxy/test/
+   node --test worker/legacy-unevie-proxy/test/smoke.test.mjs
    ```
    Покрывает file://-кейс (Origin: null), проброс Origin/CF-Connecting-IP,
    сохранение контракта `{ok:…}` и кодов, ветки 405/500/502.
