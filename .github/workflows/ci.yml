@@ -33,6 +33,8 @@ jobs:
         with: { node-version: 'lts/*' }
       - name: Worker unit tests
         run: node --test worker/test/worker.test.mjs
+      - name: Worker fetch-handler integration tests
+        run: node --test worker/test/fetch.test.mjs
         working-directory: .
       - name: Legacy unevie-proxy smoke (offline, injected fetch)
         run: node --test worker/legacy-unevie-proxy/test/smoke.test.mjs
