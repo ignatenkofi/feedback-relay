@@ -4,6 +4,13 @@
 санитизирует и пересылает в Slack-канал проекта через `chat.postMessage`
 (бот-токен). Stateless: ничего не хранит. GitHub-кредов нет по дизайну.
 
+Наблюдаемость деливери (#12): `GET /v1/health/{projectId}` — проба пути
+доставки (`auth.test` + `conversations.info`). Наружу только `{ok}` /
+`{ok:false}` (503) — публичный эндпоинт не оракул конфигурации; коды ошибок
+Slack — в логе (`wrangler tail`). Результат кэшируется в изоляте 60 с, лимит
+жёстче POST-пути (3/мин с ip). Задуман как шаг триаж-Routine (M2): раз в свип
+дёрнуть health каждого проекта, fail → строка в сводке владельцу.
+
 ## Первичный деплой
 
 ```bash
@@ -52,16 +59,23 @@ wrangler deploy
 ## Тесты
 
 ```bash
-node --test worker/test/worker.test.mjs   # чистые функции: origin/санитизация/лимиты/формат
+npm test   # = node --test test/worker.test.mjs test/fetch.test.mjs
 ```
 
-Интеграционные тесты fetch-хендлера (miniflare/vitest) — этап M1.
+`worker.test.mjs` — чистые функции (origin/санитизация/лимиты/формат);
+`fetch.test.mjs` — хендлер целиком с mock Slack: happy-path, error-ветки,
+health-проба, AE-точки. CF-рантайм (настоящий binding, эдж-CORS) — за
+wrangler-смоуком.
 
 ## Операции
 
 - Перевыложить после правок: `wrangler deploy`
 - Ротация токена: `wrangler secret put SLACK_BOT_TOKEN` (заново) — без редеплоя проектов
 - Логи: `wrangler tail`
+- Здоровье доставки проекта: `curl https://<worker>/v1/health/<projectId>` →
+  `{"ok":true}` | 503; детали фейла — в `wrangler tail`
+- Счётчики исходов (opt-in): раскомментировать AE-биндинг в `wrangler.toml`
+  (см. комментарий там же) — точки пишутся без текста отзывов
 - Удалить: `wrangler delete`
 
 ## Защита (унаследована от unevie/feedback-worker, обобщена per-project)

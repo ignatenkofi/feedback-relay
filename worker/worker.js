@@ -1,6 +1,8 @@
 /* feedback-relay — multi-tenant Cloudflare Worker: приём фидбека со страниц проектов → Slack.
  *
- * POST /v1/f/{projectId}  { text, name?, context{}, sdk? }
+ * POST /v1/f/{projectId}       { text, name?, context{}, sdk? }
+ * GET  /v1/health/{projectId}  → { ok } — проба деливери-пути (#12): auth.test +
+ *                              conversations.info; наружу только ok/fail, детали в лог
  * Реестр проектов — projects.json (origin-политика, канал, лимиты — на проект).
  * Доставка — Slack chat.postMessage от бота (секрет SLACK_BOT_TOKEN) c message
  * metadata `feedback_v1` — машиночитаемый маркер для триаж-свипа (см. triage/ROUTINE.md).
@@ -258,6 +260,55 @@ export async function postToSlack(payload, token, { fetchFn, sleepFn } = {}) {
   return { ok: false, error: 'slack_' + ((res.out && res.out.error) || res.r.status) };
 }
 
+/* Health-проба деливери-пути (#12): auth.test (токен жив) + conversations.info
+ * (канал существует и виден боту — ловит протухший токен, кик из канала,
+ * channel_not_found ДО того, как их увидит пользователь с 502). Наружу — только
+ * ok/fail: публичный эндпоинт не должен работать оракулом конфигурации; коды
+ * ошибок Slack — в лог (wrangler tail / dashboard). fetchFn — шов для тестов. */
+export async function checkHealth(cfg, token, { fetchFn } = {}) {
+  const doFetch = fetchFn || fetch;
+  const call = async (method, params) => {
+    try {
+      const r = await doFetch(`https://slack.com/api/${method}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+          Authorization: `Bearer ${token}`,
+        },
+        body: new URLSearchParams(params).toString(),
+      });
+      let out = null;
+      try { out = await r.json(); } catch { /* не-JSON — ошибка уровня HTTP */ }
+      if (r.ok && out && out.ok === true) return null;
+      return (out && out.error) || `http_${r.status}`;
+    } catch {
+      return 'network';
+    }
+  };
+  const authErr = await call('auth.test', {});
+  const chanErr = authErr ? 'skipped' : await call('conversations.info', { channel: cfg.channel });
+  return { ok: !authErr && !chanErr, detail: { auth: authErr || 'ok', channel: chanErr || 'ok' } };
+}
+
+/* Кэш здоровья в изоляте: публичный GET не должен умножать вызовы Slack API.
+ * Экспортирован только как шов для тестов (сброс между кейсами). */
+export const HEALTH_CACHE = new Map(); // projectId → { ts, ok }
+const HEALTH_TTL_MS = 60e3;
+const HEALTH_RL_PER_MIN = 3; // жёстче POST-фолбэка: проба дороже (2 вызова Slack)
+
+/* Analytics Engine (#12, opt-in): счётчик исходов доставки — только project +
+ * outcome, БЕЗ текста отзывов (stateless для контента сохраняется). Биндинг не
+ * задан — no-op; конфиг в wrangler.toml закомментирован до решения владельца. */
+function recordOutcome(env, projectId, outcome) {
+  try {
+    if (env.FEEDBACK_AE) env.FEEDBACK_AE.writeDataPoint({
+      blobs: [projectId || 'unknown', outcome],
+      doubles: [1],
+      indexes: [projectId || 'unknown'],
+    });
+  } catch { /* наблюдаемость не должна ронять доставку */ }
+}
+
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -271,26 +322,70 @@ export function routeProjectId(pathname) {
   return m ? m[1] : null;
 }
 
+/* /v1/health/{projectId} → projectId | null */
+export function routeHealthId(pathname) {
+  const m = /^\/v1\/health\/([A-Za-z0-9_-]{1,40})$/.exec(pathname);
+  return m ? m[1] : null;
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
+
+    /* GET — только health-проба (#12); остальные GET-пути ведут себя как раньше (405) */
+    if (request.method === 'GET') {
+      const healthId = routeHealthId(new URL(request.url).pathname);
+      if (!healthId) return json({ ok: false, error: 'method' }, 405);
+      if (!env.SLACK_BOT_TOKEN) return json({ ok: false, error: 'not_configured' }, 500);
+      const cfg = resolveProject(healthId);
+      /* 404 на неизвестный проект — реестр не раскрываем, как в POST-пути */
+      if (!cfg) return json({ ok: false, error: 'unknown_project' }, 404);
+
+      /* та же двухслойная защита, что у POST, но жёстче: проба = 2 вызова Slack */
+      const hip = request.headers.get('CF-Connecting-IP') || '';
+      const hKey = `health:${healthId}:${hip}`;
+      if (env.FEEDBACK_RL && hip) {
+        try {
+          const { success } = await env.FEEDBACK_RL.limit({ key: hKey });
+          if (!success) return json({ ok: false, error: 'rate' }, 429);
+        } catch { /* биндинг недоступен (локальный dev) — работает фолбэк ниже */ }
+      }
+      if (hip && rateLimitedFallback(hKey, Date.now(), HEALTH_RL_PER_MIN))
+        return json({ ok: false, error: 'rate' }, 429);
+
+      const hit = HEALTH_CACHE.get(healthId);
+      if (hit && Date.now() - hit.ts < HEALTH_TTL_MS)
+        return json({ ok: hit.ok }, hit.ok ? 200 : 503);
+
+      const health = await checkHealth(cfg, env.SLACK_BOT_TOKEN);
+      HEALTH_CACHE.set(healthId, { ts: Date.now(), ok: health.ok });
+      if (!health.ok)
+        console.log(`health ${healthId}: auth=${health.detail.auth} channel=${health.detail.channel}`);
+      return json({ ok: health.ok }, health.ok ? 200 : 503);
+    }
+
     if (request.method !== 'POST') return json({ ok: false, error: 'method' }, 405);
     if (!env.SLACK_BOT_TOKEN) return json({ ok: false, error: 'not_configured' }, 500);
 
     const projectId = routeProjectId(new URL(request.url).pathname);
     const cfg = resolveProject(projectId);
+    /* reply = json + AE-точка исхода (#12): outcome = 'ok' | код ошибки */
+    const reply = (obj, status) => {
+      recordOutcome(env, cfg ? projectId : null, obj.ok ? 'ok' : obj.error);
+      return json(obj, status);
+    };
     /* 404 и на кривой путь, и на неизвестный проект — реестр не раскрываем */
-    if (!cfg) return json({ ok: false, error: 'unknown_project' }, 404);
+    if (!cfg) return reply({ ok: false, error: 'unknown_project' }, 404);
 
     if (!originAllowed(request.headers.get('Origin'), cfg.origins || []))
-      return json({ ok: false, error: 'origin' }, 403);
+      return reply({ ok: false, error: 'origin' }, 403);
 
     const ip = request.headers.get('CF-Connecting-IP') || '';
     const rlKey = `${projectId}:${ip}`;
     if (env.FEEDBACK_RL && ip) {
       try {
         const { success } = await env.FEEDBACK_RL.limit({ key: rlKey });
-        if (!success) return json({ ok: false, error: 'rate' }, 429);
+        if (!success) return reply({ ok: false, error: 'rate' }, 429);
       } catch { /* биндинг недоступен (локальный dev) — работает фолбэк ниже */ }
     }
     /* cfg.rate.perMin — best-effort ужатие ВНУТРИ изолята: опускает эффективный
@@ -298,18 +393,18 @@ export default {
        но поднять выше него не может. CI (#22) отклоняет perMin больше потолка. */
     const perMin = (cfg.rate && cfg.rate.perMin) || undefined;
     if (ip && rateLimitedFallback(rlKey, Date.now(), perMin))
-      return json({ ok: false, error: 'rate' }, 429);
+      return reply({ ok: false, error: 'rate' }, 429);
 
     /* дешёвый отсев до чтения тела; истина в байтах — внутри parsePayload (#6) */
     const declared = Number(request.headers.get('Content-Length') || 0);
-    if (declared > LIMITS.MAX_BODY) return json({ ok: false, error: 'too_long' }, 413);
+    if (declared > LIMITS.MAX_BODY) return reply({ ok: false, error: 'too_long' }, 413);
 
     const parsed = parsePayload(await request.text());
-    if (!parsed.ok) return json({ ok: false, error: parsed.error }, parsed.status);
+    if (!parsed.ok) return reply({ ok: false, error: parsed.error }, parsed.status);
 
     const sent = await postToSlack(
       buildSlackMessage(projectId, cfg, parsed.data), env.SLACK_BOT_TOKEN);
-    if (!sent.ok) return json({ ok: false, error: sent.error }, 502);
-    return json({ ok: true });
+    if (!sent.ok) return reply({ ok: false, error: sent.error }, 502);
+    return reply({ ok: true });
   },
 };

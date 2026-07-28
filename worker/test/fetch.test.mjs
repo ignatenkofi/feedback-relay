@@ -139,3 +139,121 @@ test('fetch: логическая ошибка Slack — 502 slack_*, без р�
   assert.deepEqual(await jsonOf(res), { ok: false, error: 'slack_channel_not_found' });
   assert.equal(slack.calls.length, 1, 'логические ошибки не ретраим');
 });
+
+/* ---------- GET /v1/health/{projectId} (#12) ---------- */
+
+import { HEALTH_CACHE } from '../worker.js';
+
+/* Slack-мок с раздельными ответами по методам API: url → body */
+function slackApiMock(map) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init, body: init && init.body });
+    const method = String(url).split('/').pop();
+    const body = (map && map[method]) || { ok: true };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const HURL = 'https://relay.example/v1/health/unevie';
+const hreq = ({ ip = '10.9.0.1', url = HURL } = {}) =>
+  new Request(url, { method: 'GET', headers: ip ? { 'CF-Connecting-IP': ip } : {} });
+
+test('health: happy-path — auth.test + conversations.info, 200 {ok:true}', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock();
+  const res = await worker.fetch(hreq({ ip: '10.9.1.1' }), env());
+  assert.equal(res.status, 200);
+  assert.deepEqual(await jsonOf(res), { ok: true });
+  assert.equal(slack.calls.length, 2);
+  assert.ok(slack.calls[0].url.endsWith('/auth.test'));
+  assert.ok(slack.calls[1].url.endsWith('/conversations.info'));
+  assert.match(String(slack.calls[1].body), /channel=C0BCYPYFF2Q/);
+  assert.equal(slack.calls[0].init.headers.Authorization, 'Bearer xoxb-test');
+});
+
+test('health: invalid_auth — 503 {ok:false}, канал не проверяем', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock({ 'auth.test': { ok: false, error: 'invalid_auth' } });
+  const res = await worker.fetch(hreq({ ip: '10.9.2.1' }), env());
+  assert.equal(res.status, 503);
+  assert.deepEqual(await jsonOf(res), { ok: false });
+  assert.equal(slack.calls.length, 1, 'после падения auth канал скипаем');
+});
+
+test('health: channel_not_found — 503, наружу без кода ошибки', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock({
+    'conversations.info': { ok: false, error: 'channel_not_found' },
+  });
+  const res = await worker.fetch(hreq({ ip: '10.9.3.1' }), env());
+  assert.equal(res.status, 503);
+  assert.deepEqual(await jsonOf(res), { ok: false }, 'код ошибки Slack наружу не утекает');
+  assert.equal(slack.calls.length, 2);
+});
+
+test('health: неизвестный проект — 404, GET на прочие пути — 405, Slack не зовём', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock();
+  assert.equal((await worker.fetch(hreq({ url: 'https://relay.example/v1/health/ghost', ip: '10.9.4.1' }), env())).status, 404);
+  assert.equal((await worker.fetch(hreq({ url: 'https://relay.example/v1/f/unevie', ip: '10.9.4.2' }), env())).status, 405);
+  assert.equal(slack.calls.length, 0);
+});
+
+test('health: кэш изолята — повторный GET в TTL не зовёт Slack снова', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock();
+  await worker.fetch(hreq({ ip: '10.9.5.1' }), env());
+  const res2 = await worker.fetch(hreq({ ip: '10.9.5.2' }), env());
+  assert.equal(res2.status, 200);
+  assert.equal(slack.calls.length, 2, 'вторая проба — из кэша, всё те же 2 вызова');
+});
+
+test('health: binding зовётся с ключом health:{project}:{ip}', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock();
+  const keys = [];
+  const rl = { limit: async ({ key }) => { keys.push(key); return { success: true }; } };
+  await worker.fetch(hreq({ ip: '10.9.6.1' }), env({ FEEDBACK_RL: rl }));
+  assert.deepEqual(keys, ['health:unevie:10.9.6.1']);
+});
+
+test('health: in-isolate фолбэк — 4-й GET с одного ip за минуту → 429', async () => {
+  HEALTH_CACHE.clear();
+  globalThis.fetch = slack = slackApiMock();
+  for (let i = 0; i < 3; i++)
+    assert.equal((await worker.fetch(hreq({ ip: '10.9.7.1' }), env())).status, 200);
+  const res = await worker.fetch(hreq({ ip: '10.9.7.1' }), env());
+  assert.equal(res.status, 429);
+});
+
+/* ---------- Analytics Engine точки исходов (#12, opt-in) ---------- */
+
+function aeMock() {
+  const points = [];
+  return { writeDataPoint: (p) => points.push(p), points };
+}
+
+test('AE: happy-path POST пишет точку {project, ok}; без биндинга — работает как раньше', async () => {
+  const ae = aeMock();
+  const res = await worker.fetch(req({ ip: '198.51.101.1' }), env({ FEEDBACK_AE: ae }));
+  assert.equal(res.status, 200);
+  assert.equal(ae.points.length, 1);
+  assert.deepEqual(ae.points[0].blobs, ['unevie', 'ok']);
+  assert.equal(ae.points[0].indexes[0], 'unevie');
+});
+
+test('AE: ошибочные исходы — origin и unknown_project (без раскрутки кардинальности)', async () => {
+  const ae = aeMock();
+  await worker.fetch(req({ ip: '198.51.101.2', origin: 'https://evil.example' }), env({ FEEDBACK_AE: ae }));
+  await worker.fetch(req({ ip: '198.51.101.3', url: 'https://relay.example/v1/f/ghost' }), env({ FEEDBACK_AE: ae }));
+  assert.deepEqual(ae.points.map((p) => p.blobs), [['unevie', 'origin'], ['unknown', 'unknown_project']]);
+});
+
+test('AE: сломанный writeDataPoint не роняет доставку', async () => {
+  const ae = { writeDataPoint: () => { throw new Error('ae down'); } };
+  const res = await worker.fetch(req({ ip: '198.51.101.4' }), env({ FEEDBACK_AE: ae }));
+  assert.equal(res.status, 200);
+});
