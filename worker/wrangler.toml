@@ -15,3 +15,12 @@ name = "FEEDBACK_RL"
 type = "ratelimit"
 namespace_id = "1002"
 simple = { limit = 6, period = 60 }
+
+# Analytics Engine (issue #12, opt-in-вариант наблюдаемости): счётчики исходов
+# доставки (project, outcome) — БЕЗ текста отзывов. Код воркера работает и без
+# биндинга (recordOutcome — no-op). Раскомментировать при выборе AE-варианта;
+# датасет создастся при первой записи. Альтернатива уже живая: GET
+# /v1/health/{projectId} + шаг в триаж-Routine (M2).
+# [[analytics_engine_datasets]]
+# binding = "FEEDBACK_AE"
+# dataset = "feedback_relay_outcomes"
