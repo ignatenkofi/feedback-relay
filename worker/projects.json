@@ -1,13 +1,4 @@
 {
   "_comment": "Реестр проектов feedback-relay. Новый проект = запись здесь (через PR) + сниппет на странице; деплой воркера подхватывает конфиг. Ключи с '_' игнорируются роутером. '_draft': true — запись-черновик (канал ещё плейсхолдер): воркер отвечает на неё 404, CI пропускает проверку формата channel (#13). Снять после того, как проставлен реальный channel ID и бот приглашён.",
-  "_schema": "id → { origins: [host | *.wildcard | 'null' для офлайн file://], channel: Slack channel ID /^C[A-Z0-9]{6,}$/ (бот должен быть приглашён), repo: owner/name для триаж-issues, title, emoji, rate?: {perMin ≤ потолка binding в wrangler.toml}, _draft?: bool }",
-
-  "unevie": {
-    "origins": ["unevie.pages.dev", "*.unevie.pages.dev", "null"],
-    "channel": "C0BCYPYFF2Q",
-    "repo": "ignatenkofi/unevie",
-    "title": "ЖИЗНЬ",
-    "emoji": "📖",
-    "rate": { "perMin": 6 }
-  }
+  "_schema": "id → { origins: [host | *.wildcard | 'null' для офлайн file://], channel: Slack channel ID /^C[A-Z0-9]{6,}$/ (бот должен быть приглашён), repo: owner/name для триаж-issues, title, emoji, rate?: {perMin ≤ потолка binding в wrangler.toml}, _draft?: bool }"
 }
