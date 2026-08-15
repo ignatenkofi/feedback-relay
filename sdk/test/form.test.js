@@ -65,3 +65,44 @@ test('mount: экспортирован как функция; без DOM бро
   assert.equal(typeof mount, 'function');
   assert.throws(() => mount({ endpoint: 'x', project: 'p' }), /требует DOM|DOM/);
 });
+
+/* --- #42: клиентский предел длины --------------------------------------
+ * Проверяется расхождение двух правд, а не наличие строки: число 4000 живёт
+ * и в SDK, и в воркере, и SDK о воркере ничего не спрашивает. Разойдутся —
+ * вернётся ровно тот дефект, ради которого предел и появился: форма
+ * принимает больше, чем берёт сервер, и вдумчивый отзыв теряется на 413.
+ * DOM здесь по-прежнему не поднимается (зависимостей у репозитория нет),
+ * поэтому проверка идёт по исходникам — то, что можно проверить честно. */
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const SDK_SRC = fs.readFileSync(path.join(__dirname, '..', 'feedback-form.js'), 'utf8');
+const WORKER_SRC = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'worker', 'worker.js'),
+  'utf8',
+);
+
+test('#42: предел длины в SDK равен LIMITS.MAX_TEXT воркера', () => {
+  const sdk = SDK_SRC.match(/var MAX_TEXT\s*=\s*(\d+)/);
+  const worker = WORKER_SRC.match(/MAX_TEXT:\s*(\d+)/);
+  assert.ok(sdk, 'в feedback-form.js нет var MAX_TEXT');
+  assert.ok(worker, 'в worker.js нет LIMITS.MAX_TEXT');
+  assert.equal(
+    Number(sdk[1]),
+    Number(worker[1]),
+    'предел формы разошёлся с серверным: 413 снова достижим из формы',
+  );
+});
+
+test('#42: textarea получает maxlength из той же константы', () => {
+  assert.match(SDK_SRC, /setAttribute\('maxlength',\s*String\(MAX_TEXT\)\)/);
+});
+
+test('#42: строка о приватности есть в обеих локалях и не пустая', () => {
+  for (const lang of ['ru', 'en']) {
+    assert.equal(typeof DEFAULT_LABELS[lang].privacy, 'string');
+    assert.ok(DEFAULT_LABELS[lang].privacy.length > 20, `${lang}: строка слишком коротка`);
+  }
+  assert.notEqual(DEFAULT_LABELS.ru.privacy, DEFAULT_LABELS.en.privacy);
+});

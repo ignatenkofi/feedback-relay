@@ -19,6 +19,14 @@
 (function (global) {
   'use strict';
 
+  /* Держится равным LIMITS.MAX_TEXT воркера (`worker/worker.js:34`). Сервер
+     режет текст на 4000 символах и отвечает 413 — то есть длинный вдумчивый
+     отзыв терялся целиком в момент отправки, а это ровно то, ради чего канал
+     существует (#42). Дублирование числа здесь неизбежно: SDK статичен и
+     воркера ни о чём не спрашивает, поэтому оно названо, а не спрятано в
+     разметке. */
+  var MAX_TEXT = 4000;
+
   /* Дефолтные подписи: два встроенных набора (ru/en), любой ключ переопределяется
      через opts.labels. Тексты — данные автора страницы, не пользовательский ввод. */
   var DEFAULT_LABELS = {
@@ -30,6 +38,10 @@
       submit: 'Отправить',
       sending: 'Отправляем…',
       close: 'Закрыть',
+      // Одной фразы достаточно: согласия/чекбокса issue #42 не требует —
+      // требуется, чтобы человек знал, куда уходит текст, ДО отправки.
+      privacy: 'Текст уходит в рабочий чат команды; имя указывать не обязательно.',
+      remaining: 'осталось символов: {n}',
       success: 'Спасибо! Отзыв отправлен.',
       empty: 'Напишите пару слов.',
       rate: 'Слишком часто — попробуйте через минуту.',
@@ -43,6 +55,8 @@
       submit: 'Send',
       sending: 'Sending…',
       close: 'Close',
+      privacy: 'Your message goes to the team chat; the name field is optional.',
+      remaining: '{n} characters left',
       success: 'Thanks! Your feedback was sent.',
       empty: 'Please write a few words.',
       rate: 'Too many requests — try again in a minute.',
@@ -129,6 +143,8 @@
     'font-weight:600;cursor:pointer}' +
     '.fr-submit[disabled]{opacity:.6;cursor:default}' +
     '.fr-status{font-size:13px;min-height:18px;color:var(--fr-muted)}' +
+    '.fr-privacy{font-size:12px;line-height:1.4;margin:0 0 10px;color:var(--fr-muted)}' +
+    '.fr-counter{font-size:12px;text-align:right;margin:-6px 0 10px;color:var(--fr-muted)}' +
     '.fr-status.fr-err{color:var(--fr-err)}.fr-status.fr-ok{color:var(--fr-ok)}';
 
   function injectStyle() {
@@ -189,6 +205,7 @@
     textarea.setAttribute('placeholder', L.placeholder);
     textarea.setAttribute('aria-label', L.title);
     textarea.required = true;
+    textarea.setAttribute('maxlength', String(MAX_TEXT));
     var nameInput = el('input', 'fr-name');
     nameInput.type = 'text';
     nameInput.setAttribute('placeholder', L.name);
@@ -196,13 +213,23 @@
     var status = el('div', 'fr-status');
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
+    var privacy = el('div', 'fr-privacy', L.privacy);
+    var counter = el('div', 'fr-counter');
+    function updateCounter() {
+      var left = MAX_TEXT - textarea.value.length;
+      counter.textContent = L.remaining.replace('{n}', String(left));
+    }
+    textarea.addEventListener('input', updateCounter);
+    updateCounter();
     var actions = el('div', 'fr-actions');
     var submitBtn = el('button', 'fr-submit', L.submit);
     submitBtn.type = 'submit';
 
     actions.appendChild(submitBtn);
     form.appendChild(textarea);
+    form.appendChild(counter);
     form.appendChild(nameInput);
+    form.appendChild(privacy);
     form.appendChild(status);
     form.appendChild(actions);
     dialog.appendChild(closeBtn);
